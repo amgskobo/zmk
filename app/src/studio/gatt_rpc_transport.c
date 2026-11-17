@@ -16,13 +16,30 @@
 #include <zmk/event_manager.h>
 #include <zmk/events/ble_active_profile_changed.h>
 #include <zmk/studio/rpc.h>
+#include <zmk/studio/ble_discovery.h>
 #include "uuid.h"
 
 #include <zephyr/logging/log.h>
 
 LOG_MODULE_DECLARE(zmk_studio, CONFIG_ZMK_STUDIO_LOG_LEVEL);
 
-static bool handling_rx = false;
+static atomic_t handling_rx;
+
+static bool rpc_active_host(struct bt_conn *conn) {
+    struct bt_conn *active = zmk_ble_active_profile_conn();
+    bool matches = active && active == conn;
+    if (matches) {
+        struct bt_conn_info info;
+        matches = bt_conn_get_info(conn, &info) == 0 && info.state == BT_CONN_STATE_CONNECTED &&
+                  info.role == BT_CONN_ROLE_PERIPHERAL;
+    }
+    if (active) {
+        bt_conn_unref(active);
+    }
+    return matches;
+}
+
+static bool rpc_session_matches(struct bt_conn *conn);
 
 static K_SEM_DEFINE(indicate_sem, 1, 1);
 static atomic_t notify_size;
@@ -62,9 +79,16 @@ static ssize_t read_rpc_resp(struct bt_conn *conn, const struct bt_gatt_attr *at
 
 static ssize_t write_rpc_req(struct bt_conn *conn, const struct bt_gatt_attr *attr, const void *buf,
                              uint16_t len, uint16_t offset, uint8_t flags) {
-    if (!handling_rx) {
+    if (!atomic_get(&handling_rx)) {
         return len;
     }
+    if (!rpc_active_host(conn)) {
+        return BT_GATT_ERR(BT_ATT_ERR_AUTHORIZATION);
+    }
+    if (!rpc_session_matches(conn)) {
+        return BT_GATT_ERR(BT_ATT_ERR_CCC_IMPROPER_CONF);
+    }
+    zmk_studio_ble_discovery_stop();
 
     uint32_t copied = 0;
     struct ring_buf *rpc_buf = zmk_rpc_get_rx_buf();
@@ -85,13 +109,48 @@ static ssize_t write_rpc_req(struct bt_conn *conn, const struct bt_gatt_attr *at
     return len;
 }
 
+/* Per-write callback retains the peer identity, including repeated writes and
+ * bonds whose aggregate CCC value was already enabled by another connection. */
+static ssize_t rpc_ccc_write(struct bt_conn *conn, const struct bt_gatt_attr *attr,
+                             uint16_t value) {
+    ARG_UNUSED(attr);
+    if (value == BT_GATT_CCC_INDICATE && atomic_get(&handling_rx) && rpc_active_host(conn)) {
+        zmk_studio_ble_discovery_stop();
+    }
+    return sizeof(value);
+}
+
+static struct _bt_gatt_ccc rpc_ccc =
+    BT_GATT_CCC_INITIALIZER(rpc_ccc_cfg_changed, rpc_ccc_write, NULL);
+
 BT_GATT_SERVICE_DEFINE(
     rpc_interface, BT_GATT_PRIMARY_SERVICE(BT_UUID_DECLARE_128(ZMK_STUDIO_BT_SERVICE_UUID)),
     BT_GATT_CHARACTERISTIC(BT_UUID_DECLARE_128(ZMK_STUDIO_BT_RPC_CHRC_UUID),
                            BT_GATT_CHRC_WRITE | BT_GATT_CHRC_READ | BT_GATT_CHRC_INDICATE,
                            BT_GATT_PERM_READ_ENCRYPT | BT_GATT_PERM_WRITE_ENCRYPT, read_rpc_resp,
                            write_rpc_req, NULL),
-    BT_GATT_CCC(rpc_ccc_cfg_changed, BT_GATT_PERM_READ_ENCRYPT | BT_GATT_PERM_WRITE_ENCRYPT));
+    BT_GATT_CCC_MANAGED(&rpc_ccc, BT_GATT_PERM_READ_ENCRYPT | BT_GATT_PERM_WRITE_ENCRYPT));
+
+static bool rpc_session_matches(struct bt_conn *conn) {
+    return bt_gatt_is_subscribed(conn, &rpc_interface.attrs[1], BT_GATT_CCC_INDICATE);
+}
+
+#if IS_ENABLED(CONFIG_ZMK_STUDIO_LOCK_BLE_DIRECT_ADVERTISING_ON_UNLOCK)
+bool zmk_studio_ble_transport_is_active(void) { return atomic_get(&handling_rx); }
+
+bool zmk_studio_ble_has_session(void) {
+    if (!atomic_get(&handling_rx)) {
+        return false;
+    }
+    struct bt_conn *conn = zmk_ble_active_profile_conn();
+    if (!conn) {
+        return false;
+    }
+    bool subscribed = rpc_active_host(conn) && rpc_session_matches(conn);
+    bt_conn_unref(conn);
+    return subscribed;
+}
+#endif
 
 static uint16_t get_notify_size_for_conn(struct bt_conn *conn) {
     uint16_t notify_size = 23; // Default MTU size unless negotiated higher
@@ -116,12 +175,13 @@ static void refresh_notify_size(void) {
 
 static int gatt_start_rx() {
     refresh_notify_size();
-    handling_rx = true;
+    atomic_set(&handling_rx, true);
     return 0;
 }
 
 static int gatt_stop_rx(void) {
-    handling_rx = false;
+    atomic_set(&handling_rx, false);
+    zmk_studio_ble_discovery_stop();
     return 0;
 }
 
@@ -227,6 +287,7 @@ ZMK_RPC_TRANSPORT(gatt, ZMK_TRANSPORT_BLE, gatt_start_rx, gatt_stop_rx, gatt_tx_
 
 static int gatt_rpc_listener(const zmk_event_t *eh) {
     refresh_notify_size();
+    zmk_studio_ble_discovery_refresh();
 
 #if IS_ENABLED(CONFIG_ZMK_STUDIO_LOCK_ON_DISCONNECT)
     struct bt_conn *conn = zmk_ble_active_profile_conn();

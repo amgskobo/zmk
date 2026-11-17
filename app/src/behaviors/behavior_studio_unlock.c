@@ -12,6 +12,7 @@
 
 #include <zmk/behavior.h>
 #include <zmk/studio/core.h>
+#include <zmk/studio/ble_discovery.h>
 
 LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 
@@ -20,6 +21,7 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 static int on_keymap_binding_pressed(struct zmk_behavior_binding *binding,
                                      struct zmk_behavior_binding_event event) {
     zmk_studio_core_unlock();
+    zmk_studio_ble_discovery_start();
 
     return ZMK_BEHAVIOR_OPAQUE;
 }

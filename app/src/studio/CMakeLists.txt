@@ -11,6 +11,7 @@ zephyr_linker_sources(SECTIONS ../../include/linker/zmk-rpc-custom-subsystems.ld
 target_sources(app PRIVATE msg_framing.c)
 target_sources(app PRIVATE rpc.c)
 target_sources(app PRIVATE core.c)
+target_sources_ifdef(CONFIG_ZMK_STUDIO_LOCK_BLE_DIRECT_ADVERTISING_ON_UNLOCK app PRIVATE ble_discovery.c)
 target_sources(app PRIVATE behavior_subsystem.c)
 target_sources(app PRIVATE core_subsystem.c)
 target_sources(app PRIVATE keymap_subsystem.c)

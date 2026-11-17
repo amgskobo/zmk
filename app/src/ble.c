@@ -145,11 +145,11 @@ bool zmk_ble_profile_is_connected(uint8_t index) {
 
 #define CHECKED_ADV_STOP()                                                                         \
     err = bt_le_adv_stop();                                                                        \
-    advertising_status = ZMK_ADV_NONE;                                                             \
     if (err) {                                                                                     \
         LOG_ERR("Failed to stop advertising (err %d)", err);                                       \
         return err;                                                                                \
-    }
+    }                                                                                              \
+    advertising_status = ZMK_ADV_NONE;
 
 #define CHECKED_DIR_ADV()                                                                          \
     addr = zmk_ble_active_profile_addr();                                                          \

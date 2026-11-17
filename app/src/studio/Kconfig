@@ -22,6 +22,11 @@ if ZMK_STUDIO_LOCKING
 config ZMK_STUDIO_LOCK_IDLE_TIMEOUT_SEC
     int "Idle Timeout"
     default 600
+    range 0 86400
+    help
+      Seconds until an unlocked Studio locks again without a received RPC.
+      Each decoded RPC renews the idle timeout only while unlocked. Zero
+      disables the idle timeout. This does not control BLE advertising.
 
 config ZMK_STUDIO_LOCK_ON_DISCONNECT
     bool "Lock On Disconnect"
@@ -30,11 +35,24 @@ config ZMK_STUDIO_LOCK_ON_DISCONNECT
 endif
 
 config ZMK_STUDIO_LOCK_BLE_DIRECT_ADVERTISING_ON_UNLOCK
-    bool "Enable Directed Advertising on Unlock"
+    bool "Start bounded BLE discovery with the physical Studio unlock key"
+    depends on ZMK_STUDIO_TRANSPORT_BLE
     default y if ZMK_STUDIO_LOCKING && ZMK_BLE
     help
-      When enabled, the keyboard will enable directed advertising to active profile
-      during unlock. It's required to detect device from web bluetooth API for some browsers.
+      The physical Studio unlock behavior also opens a separate discovery
+      window for Web Bluetooth. Discovery stops on the selected host's Studio
+      subscription or RPC, or at its own timeout. Lock state and RPC traffic do
+      not restart or extend advertising. The historical option name is kept
+      for compatibility; the current BLE backend uses undirected advertising.
+
+config ZMK_STUDIO_BLE_ADVERTISING_TIMEOUT_SEC
+    int "Studio BLE discovery timeout in seconds"
+    depends on ZMK_STUDIO_LOCK_BLE_DIRECT_ADVERTISING_ON_UNLOCK
+    range 1 3600
+    default 90
+    help
+      Maximum duration of a physical discovery request. A new physical key
+      press restarts this window. The Studio lock idle timeout is independent.
 
 menuconfig ZMK_STUDIO_RPC
     bool "Remote Procedure Calls (RPC)"
